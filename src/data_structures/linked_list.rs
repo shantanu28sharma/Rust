@@ -1,150 +1,289 @@
-use std::fmt::{self, Display, Formatter};
-use std::ptr::NonNull;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-struct Node<T> {
-    val: T,
-    next: Option<NonNull<Node<T>>>,
-    prev: Option<NonNull<Node<T>>>,
+type NodeRef = Rc<RefCell<Node>>;
+pub type NodeOption = Option<NodeRef>;
+
+#[derive(PartialEq, Debug)]
+pub struct Node {
+    pub data: String,
+    pub next: NodeOption
 }
 
-impl<T> Node<T> {
-    fn new(t: T) -> Node<T> {
-        Node {
-            val: t,
-            prev: None,
-            next: None,
+impl Node {
+    pub fn new(text: String) -> NodeRef {
+        Rc::new(RefCell::new(Node {
+            data: text,
+            next: None
+        }))
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        println!("Node with this data -> '{}' just dropped", self.data);
+    }
+}
+
+// Node iterator
+pub struct ListNodeIterator {
+    current: NodeOption
+}
+
+impl ListNodeIterator {
+    pub fn new(start_at: NodeOption) -> Self {
+        ListNodeIterator {
+            current: start_at
         }
     }
 }
 
-pub struct LinkedList<T> {
-    length: u32,
-    start: Option<NonNull<Node<T>>>,
-    end: Option<NonNull<Node<T>>>,
-}
+impl Iterator for ListNodeIterator {
+    type Item = NodeRef;
 
-impl<T> Default for LinkedList<T> {
-    fn default() -> Self {
-        Self::new()
+    fn next(&mut self) -> NodeOption {
+        let current = &self.current;
+        let mut result = None;
+
+        self.current = match current {
+            Some(ref current) => {
+                result = Some(Rc::clone(current));
+                match &current.borrow().next {
+                    Some(next_node) => {
+                        Some(Rc::clone(next_node))
+                    },
+                    _ => None
+                }
+            },
+            _ => None
+        };
+
+        result
     }
 }
 
-impl<T> LinkedList<T> {
-    pub fn new() -> Self {
-        Self {
-            length: 0,
-            start: None,
-            end: None,
+#[derive(PartialEq, Debug)]
+pub struct LinkedList {
+    head: NodeOption,
+    tail: NodeOption,
+    pub length: usize
+}
+
+impl LinkedList {
+
+    pub fn new_empty() -> Self {
+        LinkedList {
+            head: None,
+            tail: None,
+            length: 0
         }
     }
 
-    pub fn add(&mut self, obj: T) {
-        let mut node = Box::new(Node::new(obj));
-        unsafe {
-            // Since we are adding node at the end, next will always be None
-            node.next = None;
-            node.prev = self.end;
-            // Get a pointer to node
-            let node_ptr = Some(NonNull::new_unchecked(Box::into_raw(node)));
-            match self.end {
-                // This is the case of empty list
-                None => self.start = node_ptr,
-                Some(end_ptr) => (*end_ptr.as_ptr()).next = node_ptr,
+    pub fn new(text: String) -> Self {
+        let new_head = Node::new(text);
+
+        LinkedList {
+            head: Some(new_head),
+            tail: None,
+            length: 1
+        }
+    }
+
+    pub fn append_start(&mut self, text: String) {
+        let new_head = Node::new(text);
+
+        match self.head.take() {
+            Some(old_head) => {
+                new_head.borrow_mut().next = Some(Rc::clone(&old_head));
+
+                match &self.tail {
+                    None => {
+                        self.tail = Some(Rc::clone(&old_head));
+                    },
+                    _ => ()
+                }
+            },
+            _ => ()
+        }
+
+        self.head = Some(new_head);
+        self.length = self.length + 1;
+    }
+
+    pub fn append_end(&mut self, text: String) {
+
+        match &self.head {
+            Some(head) => {
+                let new_tail = Node::new(text);
+
+                match self.tail.take() {
+                    Some(old_tail) => {
+                        old_tail.borrow_mut().next = Some(Rc::clone(&new_tail));        
+                    },
+                    _ => {
+                        head.borrow_mut().next = Some(Rc::clone(&new_tail));
+                    }    
+                }
+
+                self.tail = Some(new_tail);
+                self.length = self.length + 1;
+
+            },
+            _ => {
+                self.append_start(text);
             }
-
-            self.end = node_ptr;
         }
-        self.length += 1;
     }
 
-    pub fn get(&mut self, index: i32) -> Option<&T> {
-        self.get_ith_node(self.start, index)
-    }
-
-    fn get_ith_node<'a>(&'a mut self, node: Option<NonNull<Node<T>>>, index: i32) -> Option<&'a T> {
-        unsafe {
-            match node {
-                None => None,
-                Some(next_ptr) => match index {
-                    0 => Some(&(*next_ptr.as_ptr()).val),
-                    _ => self.get_ith_node((*next_ptr.as_ptr()).next, index - 1),
+    pub fn pop_head(&mut self) -> Option<String> {
+        self.head.take().map(|old_head| {
+            match old_head.borrow_mut().next.take() {
+                Some(new_head) => {
+                    self.head = Some(Rc::clone(&new_head));
                 },
+                _ => {}
             }
+            self.length = self.length - 1;
+            old_head.borrow().data.clone()
+        })
+    }
+
+    pub fn pop_end(&mut self) -> Option<String> {
+        self.tail.take().map(|old_tail| {
+
+            let mut iterator = self.iter_node();
+            let mut temp = iterator.next();
+            
+
+            for _ in 0..self.length - 2 {
+                temp = iterator.next();
+            }
+
+            match temp {
+                Some(node) => {
+                    node.borrow_mut().next = None;
+
+                    if self.length > 2 {
+                        self.tail = Some(Rc::clone(&node));
+                    }
+                },
+                _ => {}
+            }
+            
+            self.length = self.length - 1;
+            old_tail.borrow().data.clone()
+        })
+    }
+
+    pub fn print_items(&self) {
+        for node in self.iter_node() {
+            println!("the data is {}", node.borrow().data);
         }
     }
-}
 
-impl<T> Display for LinkedList<T>
-where
-    T: Display,
-{
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        unsafe {
-            match self.start {
-                Some(node) => write!(f, "{}", node.as_ref()),
-                None => write!(f, ""),
-            }
+    fn iter_node(&self) -> ListNodeIterator {
+        match &self.head {
+            Some(head) => {
+                ListNodeIterator::new(Some(Rc::clone(head)))
+            },
+            _ => ListNodeIterator::new(None)
         }
     }
+
 }
 
-impl<T> Display for Node<T>
-where
-    T: Display,
-{
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        unsafe {
-            match self.next {
-                Some(node) => write!(f, "{}, {}", self.val, node.as_ref()),
-                None => write!(f, "{}", self.val),
-            }
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::LinkedList;
 
+    use super::*;
+    
     #[test]
-    fn create_numeric_list() {
-        let mut list = LinkedList::<i32>::new();
-        list.add(1);
-        list.add(2);
-        list.add(3);
-        println!("Linked List is {}", list);
-        assert_eq!(3, list.length);
+    fn test_new_empty_list() {
+        let list = LinkedList::new_empty();
+
+        assert_eq!(list, LinkedList {
+            head: None,
+            tail: None,
+            length: 0
+        });
     }
 
     #[test]
-    fn create_string_list() {
-        let mut list_str = LinkedList::<String>::new();
-        list_str.add("A".to_string());
-        list_str.add("B".to_string());
-        list_str.add("C".to_string());
-        println!("Linked List is {}", list_str);
-        assert_eq!(3, list_str.length);
+    fn test_new_list() {
+        let list = LinkedList::new("node_1".to_string());
+
+        assert_eq!(list, LinkedList {
+            head: Some(Node::new("node_1".to_string())),
+            tail: None,
+            length: 1
+        });
     }
 
     #[test]
-    fn get_by_index_in_numeric_list() {
-        let mut list = LinkedList::<i32>::new();
-        list.add(1);
-        list.add(2);
-        println!("Linked List is {}", list);
-        let retrived_item = list.get(1);
-        assert!(retrived_item.is_some());
-        assert_eq!(2 as i32, *retrived_item.unwrap());
+    fn test_linked_list_append_start() {
+        let s = "node_1".to_string();
+        let c = "node_2".to_string();
+
+        let tail = Node::new(s.clone());
+
+        let head = Node {
+            data: c.clone(),
+            next: Some(Rc::clone(&tail))
+        };
+
+        let list = LinkedList {
+            head: Some(Rc::new(RefCell::new(head))),
+            tail: Some(tail),
+            length: 2
+        };
+
+        
+        let mut l_list = LinkedList::new_empty();
+        l_list.append_start(s);
+        l_list.append_start(c);
+
+        assert_eq!(l_list, list);
+    }
+
+     #[test]
+    fn test_linked_list_append_end() {
+        let s = "node_1".to_string();
+        let c = "node_2".to_string();
+
+        let tail = Node::new(c.clone());
+
+        let head = Node {
+            data: s.clone(),
+            next: Some(Rc::clone(&tail))
+        };
+
+        let list = LinkedList {
+            head: Some(Rc::new(RefCell::new(head))),
+            tail: Some(tail),
+            length: 2
+        };
+
+        
+        let mut l_list = LinkedList::new_empty();
+        l_list.append_end(s);
+        l_list.append_end(c);
+
+        assert_eq!(l_list, list);
     }
 
     #[test]
-    fn get_by_index_in_string_list() {
-        let mut list_str = LinkedList::<String>::new();
-        list_str.add("A".to_string());
-        list_str.add("B".to_string());
-        println!("Linked List is {}", list_str);
-        let retrived_item = list_str.get(1);
-        assert!(retrived_item.is_some());
-        assert_eq!("B", *retrived_item.unwrap());
+    fn test_pop_head() {
+        let mut list = LinkedList::new("node_1".to_string());
+
+        assert_eq!(list.pop_head(), Some("node_1".to_string()));
+    }
+
+    #[test]
+    fn test_pop_end() {
+        let mut list = LinkedList::new("node_1".to_string());
+        list.append_end("node_2".to_string());
+        list.append_end("node_5".to_string());
+        list.append_end("node_3".to_string());
+        list.append_end("node_4".to_string());
+        assert_eq!(list.pop_end(), Some("node_4".to_string()));
     }
 }
